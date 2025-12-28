@@ -56,7 +56,6 @@ type ConflictValue struct {
 }
 
 type FlavorProfile struct {
-	Name             string
 	CreatedAt        time.Time
 	AnalyzedMessages int
 	TimeRange        TimeRange

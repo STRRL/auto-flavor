@@ -39,9 +39,8 @@ func NewAggregator(cfg Config) *Aggregator {
 	}
 }
 
-func (a *Aggregator) Aggregate(sigs []signals.Signal, name string) *signals.FlavorProfile {
+func (a *Aggregator) Aggregate(sigs []signals.Signal) *signals.FlavorProfile {
 	profile := &signals.FlavorProfile{
-		Name:             name,
 		CreatedAt:        a.now,
 		AnalyzedMessages: len(sigs),
 	}

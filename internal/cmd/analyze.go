@@ -14,20 +14,18 @@ import (
 )
 
 var (
-	analyzePath   string
-	analyzeName   string
-	analyzeOutput string
-	analyzeDays   int
-	analyzeAll    bool
-	analyzeApply  bool
+	analyzePath  string
+	analyzeDays  int
+	analyzeAll   bool
+	analyzeApply bool
 )
 
 var analyzeCmd = &cobra.Command{
 	Use:   "analyze",
 	Short: "Analyze Claude Code chat history to extract coding flavor",
 	Long: `Analyze Claude Code chat history for a project to extract the developer's
-coding preferences, style patterns, and corrections. Generates a flavor profile
-in .flavor/<name>.md and optionally appends rules to CLAUDE.md.`,
+coding preferences, style patterns, and corrections. Generates one flavor file
+per rule in .flavor/<rule>.md and optionally appends rules to CLAUDE.md.`,
 	RunE: runAnalyze,
 }
 
@@ -35,8 +33,6 @@ func init() {
 	rootCmd.AddCommand(analyzeCmd)
 
 	analyzeCmd.Flags().StringVarP(&analyzePath, "path", "p", "", "Path to the project to analyze (default: current directory)")
-	analyzeCmd.Flags().StringVarP(&analyzeName, "name", "n", "", "Name for the flavor (default: derived from project name)")
-	analyzeCmd.Flags().StringVarP(&analyzeOutput, "output", "o", "", "Output directory for .flavor/ (default: current directory)")
 	analyzeCmd.Flags().IntVarP(&analyzeDays, "days", "d", 30, "Number of days to analyze")
 	analyzeCmd.Flags().BoolVar(&analyzeAll, "all", false, "Analyze all sessions regardless of time")
 	analyzeCmd.Flags().BoolVar(&analyzeApply, "apply", false, "Also append to target project's CLAUDE.md")
@@ -48,19 +44,8 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	flavorName := analyzeName
-	if flavorName == "" {
-		flavorName = filepath.Base(projectPath)
-	}
-
-	outputDir := analyzeOutput
-	if outputDir == "" {
-		outputDir, _ = os.Getwd()
-	}
-
 	fmt.Printf("Analyzing project: %s\n", projectPath)
-	fmt.Printf("Flavor name: %s\n", flavorName)
-	fmt.Printf("Output directory: %s\n", outputDir)
+	fmt.Printf("Output directory: %s/.flavor/\n", projectPath)
 
 	p, err := parser.NewParser()
 	if err != nil {
@@ -99,7 +84,7 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Detected %d signals\n", len(sigs))
 
 	agg := aggregator.NewAggregator(aggregator.DefaultConfig())
-	profile := agg.Aggregate(sigs, flavorName)
+	profile := agg.Aggregate(sigs)
 
 	fmt.Printf("Aggregated into profile with:\n")
 	fmt.Printf("  - %d stack preferences\n", len(profile.StackPreferences))
@@ -108,15 +93,15 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  - %d approvals\n", len(profile.Approvals))
 	fmt.Printf("  - %d conflicts\n", len(profile.Conflicts))
 
-	gen := output.NewGenerator(outputDir)
-	if err := gen.Generate(profile); err != nil {
+	gen := output.NewGenerator(projectPath)
+	files, err := gen.Generate(profile)
+	if err != nil {
 		return fmt.Errorf("failed to generate output: %w", err)
 	}
 
-	fmt.Printf("Generated .flavor/%s.md\n", flavorName)
-
-	if len(profile.Conflicts) > 0 {
-		fmt.Printf("Generated .flavor/%s.undecided_ambiguous.md (review conflicts)\n", flavorName)
+	fmt.Printf("Generated %d flavor files in .flavor/\n", len(files))
+	for _, f := range files {
+		fmt.Printf("  - %s\n", f)
 	}
 
 	if analyzeApply {

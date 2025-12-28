@@ -4,93 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
-	"text/template"
 
 	"github.com/strrl/auto-flavor/internal/signals"
 )
-
-const flavorTemplate = `# Flavor: {{.Name}}
-
-Generated: {{.CreatedAt.Format "2006-01-02 15:04:05"}}
-Analyzed: {{.AnalyzedMessages}} messages
-Time range: {{.TimeRange.Start.Format "2006-01-02"}} to {{.TimeRange.End.Format "2006-01-02"}}
-
-## Summary
-
-This flavor profile was extracted from Claude Code chat history.
-
-{{if .StylePreferences}}
-## Code Style
-
-{{range .StylePreferences}}
-- **{{.Key}}**: {{.Value}} (confidence: {{printf "%.1f" .Confidence}}, seen {{.SignalCount}} times)
-{{end}}
-{{end}}
-
-{{if .StackPreferences}}
-## Preferred Stacks
-
-{{range .StackPreferences}}
-- **{{.Key}}**: used {{.SignalCount}} times (confidence: {{printf "%.1f" .Confidence}})
-{{end}}
-{{end}}
-
-{{if .Corrections}}
-## Corrections Made
-
-These are patterns the user corrected:
-
-{{range .Corrections}}
-- **{{.Category}}/{{.Key}}**: {{truncate .Value 100}} ({{.SignalCount}} times)
-{{end}}
-{{end}}
-
-{{if .Approvals}}
-## Positive Patterns
-
-Things the user approved:
-
-{{range .Approvals}}
-- Approved: {{truncate .Value 100}} ({{.SignalCount}} times)
-{{end}}
-{{end}}
-`
-
-const ambiguousTemplate = `# Ambiguous Preferences: {{.Name}}
-
-These preferences had conflicting signals during analysis. Please review and update
-the main flavor file with your decisions.
-
-{{range .Conflicts}}
-## {{.Category}}: {{.Key}}
-
-{{range $i, $v := .Values}}
-### Option {{add $i 1}}{{if eq $i 0}} (Most Recent){{end}}
-- **Value:** {{truncate $v.Value 200}}
-- **Last seen:** {{$v.Timestamp.Format "2006-01-02"}}
-- **Signal count:** {{$v.SignalCount}}
-- **Strength score:** {{printf "%.2f" $v.Strength}}
-
-{{end}}
----
-
-{{end}}
-
-## How to Resolve
-
-1. Review each conflict above
-2. Decide which preference you want to keep
-3. Add the preferred option to ` + "`{{.Name}}.md`" + `
-4. Delete this file when all conflicts are resolved
-`
-
-const claudeMDSection = `
-
-## Flavor: %s
-
-%s
-`
 
 type Generator struct {
 	outputDir string
@@ -102,75 +20,122 @@ func NewGenerator(outputDir string) *Generator {
 	}
 }
 
-func (g *Generator) Generate(profile *signals.FlavorProfile) error {
+func (g *Generator) Generate(profile *signals.FlavorProfile) ([]string, error) {
 	flavorDir := filepath.Join(g.outputDir, ".flavor")
 	if err := os.MkdirAll(flavorDir, 0755); err != nil {
-		return fmt.Errorf("failed to create .flavor directory: %w", err)
+		return nil, fmt.Errorf("failed to create .flavor directory: %w", err)
 	}
 
-	if err := g.writeFlavorFile(profile, flavorDir); err != nil {
-		return err
-	}
+	var files []string
 
-	if len(profile.Conflicts) > 0 {
-		if err := g.writeAmbiguousFile(profile, flavorDir); err != nil {
-			return err
+	for _, pref := range profile.StackPreferences {
+		filename, err := g.writePreferenceFile(flavorDir, "stack", pref)
+		if err != nil {
+			return nil, err
 		}
+		files = append(files, filename)
 	}
 
-	return nil
+	for _, pref := range profile.StylePreferences {
+		filename, err := g.writePreferenceFile(flavorDir, "style", pref)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, filename)
+	}
+
+	for _, pref := range profile.Corrections {
+		filename, err := g.writePreferenceFile(flavorDir, "correction", pref)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, filename)
+	}
+
+	for _, pref := range profile.Approvals {
+		filename, err := g.writePreferenceFile(flavorDir, "approval", pref)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, filename)
+	}
+
+	for _, conflict := range profile.Conflicts {
+		filename, err := g.writeConflictFile(flavorDir, conflict)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, filename)
+	}
+
+	return files, nil
 }
 
-func (g *Generator) writeFlavorFile(profile *signals.FlavorProfile, flavorDir string) error {
-	filename := filepath.Join(flavorDir, profile.Name+".md")
+func (g *Generator) writePreferenceFile(flavorDir, prefType string, pref signals.Preference) (string, error) {
+	safeName := sanitizeFilename(pref.Key)
+	filename := filepath.Join(flavorDir, fmt.Sprintf("%s-%s.md", prefType, safeName))
 
-	funcs := template.FuncMap{
-		"truncate": truncate,
-		"add": func(a, b int) int { return a + b },
+	content := fmt.Sprintf(`# %s: %s
+
+**Category:** %s
+**Confidence:** %.1f
+**Seen:** %d times
+**First seen:** %s
+**Last seen:** %s
+
+## Rule
+
+%s
+`,
+		capitalize(prefType),
+		pref.Key,
+		pref.Category,
+		pref.Confidence,
+		pref.SignalCount,
+		pref.FirstSeen.Format("2006-01-02"),
+		pref.LastSeen.Format("2006-01-02"),
+		pref.Value,
+	)
+
+	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("failed to write %s file: %w", prefType, err)
 	}
 
-	tmpl, err := template.New("flavor").Funcs(funcs).Parse(flavorTemplate)
-	if err != nil {
-		return fmt.Errorf("failed to parse flavor template: %w", err)
-	}
-
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to create flavor file: %w", err)
-	}
-	defer file.Close()
-
-	if err := tmpl.Execute(file, profile); err != nil {
-		return fmt.Errorf("failed to write flavor file: %w", err)
-	}
-
-	return nil
+	return filename, nil
 }
 
-func (g *Generator) writeAmbiguousFile(profile *signals.FlavorProfile, flavorDir string) error {
-	filename := filepath.Join(flavorDir, profile.Name+".undecided_ambiguous.md")
+func (g *Generator) writeConflictFile(flavorDir string, conflict signals.ConflictingPreference) (string, error) {
+	safeName := sanitizeFilename(conflict.Key)
+	filename := filepath.Join(flavorDir, fmt.Sprintf("conflict-%s.undecided.md", safeName))
 
-	funcs := template.FuncMap{
-		"truncate": truncate,
-		"add": func(a, b int) int { return a + b },
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Conflict: %s\n\n", conflict.Key))
+	sb.WriteString(fmt.Sprintf("**Category:** %s\n\n", conflict.Category))
+	sb.WriteString("This preference has conflicting signals. Please review and decide which to keep.\n\n")
+
+	for i, v := range conflict.Values {
+		sb.WriteString(fmt.Sprintf("## Option %d", i+1))
+		if i == 0 {
+			sb.WriteString(" (Most Recent)")
+		}
+		sb.WriteString("\n\n")
+		sb.WriteString(fmt.Sprintf("- **Value:** %s\n", truncate(v.Value, 200)))
+		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n", v.Timestamp.Format("2006-01-02")))
+		sb.WriteString(fmt.Sprintf("- **Signal count:** %d\n", v.SignalCount))
+		sb.WriteString(fmt.Sprintf("- **Strength score:** %.2f\n\n", v.Strength))
 	}
 
-	tmpl, err := template.New("ambiguous").Funcs(funcs).Parse(ambiguousTemplate)
-	if err != nil {
-		return fmt.Errorf("failed to parse ambiguous template: %w", err)
+	sb.WriteString("---\n\n")
+	sb.WriteString("## How to Resolve\n\n")
+	sb.WriteString("1. Review each option above\n")
+	sb.WriteString("2. Create a new file with your preferred value\n")
+	sb.WriteString("3. Delete this file when resolved\n")
+
+	if err := os.WriteFile(filename, []byte(sb.String()), 0644); err != nil {
+		return "", fmt.Errorf("failed to write conflict file: %w", err)
 	}
 
-	file, err := os.Create(filename)
-	if err != nil {
-		return fmt.Errorf("failed to create ambiguous file: %w", err)
-	}
-	defer file.Close()
-
-	if err := tmpl.Execute(file, profile); err != nil {
-		return fmt.Errorf("failed to write ambiguous file: %w", err)
-	}
-
-	return nil
+	return filename, nil
 }
 
 func (g *Generator) AppendToClaudeMD(profile *signals.FlavorProfile, targetDir string) error {
@@ -192,7 +157,7 @@ func (g *Generator) AppendToClaudeMD(profile *signals.FlavorProfile, targetDir s
 		return nil
 	}
 
-	section := fmt.Sprintf(claudeMDSection, profile.Name, strings.Join(rules, "\n"))
+	section := fmt.Sprintf("\n\n## Auto-Flavor Rules\n\n%s\n", strings.Join(rules, "\n"))
 
 	file, err := os.OpenFile(claudeMDPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -207,10 +172,30 @@ func (g *Generator) AppendToClaudeMD(profile *signals.FlavorProfile, targetDir s
 	return nil
 }
 
+func sanitizeFilename(s string) string {
+	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
+	result := reg.ReplaceAllString(s, "-")
+	result = strings.Trim(result, "-")
+	if len(result) > 50 {
+		result = result[:50]
+	}
+	if result == "" {
+		result = "unnamed"
+	}
+	return strings.ToLower(result)
+}
+
 func truncate(s string, maxLen int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	if len(s) > maxLen {
 		return s[:maxLen] + "..."
 	}
 	return s
+}
+
+func capitalize(s string) string {
+	if len(s) == 0 {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
