@@ -24,6 +24,7 @@ const (
 
 type Signal struct {
 	Type      SignalType
+	Group     string
 	Category  string
 	Key       string
 	Value     string
@@ -33,6 +34,7 @@ type Signal struct {
 }
 
 type Preference struct {
+	Group       string
 	Category    string
 	Key         string
 	Value       string
@@ -43,6 +45,7 @@ type Preference struct {
 }
 
 type ConflictingPreference struct {
+	Group    string
 	Category string
 	Key      string
 	Values   []ConflictValue

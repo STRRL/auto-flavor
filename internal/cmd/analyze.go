@@ -8,16 +8,18 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/strrl/auto-flavor/internal/aggregator"
+	"github.com/strrl/auto-flavor/internal/ai"
 	"github.com/strrl/auto-flavor/internal/output"
 	"github.com/strrl/auto-flavor/internal/parser"
-	"github.com/strrl/auto-flavor/internal/signals"
 )
 
 var (
-	analyzePath  string
-	analyzeDays  int
-	analyzeAll   bool
-	analyzeApply bool
+	analyzePath      string
+	analyzeDays      int
+	analyzeAll       bool
+	analyzeApply     bool
+	analyzeModel     string
+	analyzeBatchSize int
 )
 
 var analyzeCmd = &cobra.Command{
@@ -36,6 +38,8 @@ func init() {
 	analyzeCmd.Flags().IntVarP(&analyzeDays, "days", "d", 30, "Number of days to analyze")
 	analyzeCmd.Flags().BoolVar(&analyzeAll, "all", false, "Analyze all sessions regardless of time")
 	analyzeCmd.Flags().BoolVar(&analyzeApply, "apply", false, "Also append to target project's CLAUDE.md")
+	analyzeCmd.Flags().StringVar(&analyzeModel, "model", "google/gemini-3-flash-preview", "OpenRouter model to use")
+	analyzeCmd.Flags().IntVar(&analyzeBatchSize, "batch-size", 30, "Number of entries per AI request")
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) error {
@@ -78,8 +82,21 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Fetched %d entries for analysis\n", len(entries))
 
-	detector := signals.NewDetector()
-	sigs := detector.DetectSignals(entries)
+	detector, err := ai.NewDetector(ai.Config{
+		Model:     analyzeModel,
+		BatchSize: analyzeBatchSize,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize AI detector: %w", err)
+	}
+
+	fmt.Printf("Using OpenRouter model: %s\n", analyzeModel)
+	fmt.Printf("AI batch size: %d\n", analyzeBatchSize)
+
+	sigs, err := detector.DetectSignals(entries)
+	if err != nil {
+		return fmt.Errorf("failed to detect signals: %w", err)
+	}
 
 	fmt.Printf("Detected %d signals\n", len(sigs))
 
