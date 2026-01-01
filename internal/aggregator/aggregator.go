@@ -171,6 +171,7 @@ func (a *Aggregator) buildPreference(sigs []signals.Signal) *signals.Preference 
 	oldest := sigs[len(sigs)-1]
 
 	return &signals.Preference{
+		Group:       mostRecent.Group,
 		Category:    mostRecent.Category,
 		Key:         mostRecent.Key,
 		Value:       mostRecent.Value,
@@ -183,6 +184,7 @@ func (a *Aggregator) buildPreference(sigs []signals.Signal) *signals.Preference 
 
 func (a *Aggregator) buildConflict(category, key string, valueGroups map[string][]signals.Signal) *signals.ConflictingPreference {
 	conflict := &signals.ConflictingPreference{
+		Group:    pickConflictGroup(valueGroups),
 		Category: category,
 		Key:      key,
 	}
@@ -209,6 +211,18 @@ func (a *Aggregator) buildConflict(category, key string, valueGroups map[string]
 	})
 
 	return conflict
+}
+
+func pickConflictGroup(valueGroups map[string][]signals.Signal) string {
+	for _, sigs := range valueGroups {
+		if len(sigs) == 0 {
+			continue
+		}
+		if sigs[0].Group != "" {
+			return sigs[0].Group
+		}
+	}
+	return ""
 }
 
 func (a *Aggregator) categorizePreference(profile *signals.FlavorProfile, pref *signals.Preference, sigType signals.SignalType) {
