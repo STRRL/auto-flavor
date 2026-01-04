@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/strrl/auto-flavor/internal/signals"
@@ -13,6 +14,8 @@ import (
 type Generator struct {
 	outputDir string
 }
+
+const groupMergeThreshold = 3
 
 func NewGenerator(outputDir string) *Generator {
 	return &Generator{
@@ -28,36 +31,25 @@ func (g *Generator) Generate(profile *signals.FlavorProfile) ([]string, error) {
 
 	var files []string
 
-	for _, pref := range profile.StackPreferences {
-		filename, err := g.writePreferenceFile(flavorDir, "stack", pref)
-		if err != nil {
-			return nil, err
+	preferences := g.collectPreferences(profile)
+	grouped := groupPreferences(preferences)
+	for group, items := range grouped {
+		if len(items) >= groupMergeThreshold {
+			filename, err := g.writeGroupFile(flavorDir, group, items)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, filename)
+			continue
 		}
-		files = append(files, filename)
-	}
 
-	for _, pref := range profile.StylePreferences {
-		filename, err := g.writePreferenceFile(flavorDir, "style", pref)
-		if err != nil {
-			return nil, err
+		for _, item := range items {
+			filename, err := g.writePreferenceFile(flavorDir, string(item.Type), item.Preference)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, filename)
 		}
-		files = append(files, filename)
-	}
-
-	for _, pref := range profile.Corrections {
-		filename, err := g.writePreferenceFile(flavorDir, "correction", pref)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, filename)
-	}
-
-	for _, pref := range profile.Approvals {
-		filename, err := g.writePreferenceFile(flavorDir, "approval", pref)
-		if err != nil {
-			return nil, err
-		}
-		files = append(files, filename)
 	}
 
 	for _, conflict := range profile.Conflicts {
@@ -77,6 +69,7 @@ func (g *Generator) writePreferenceFile(flavorDir, prefType string, pref signals
 
 	content := fmt.Sprintf(`# %s: %s
 
+**Group:** %s
 **Category:** %s
 **Confidence:** %.1f
 **Seen:** %d times
@@ -89,6 +82,7 @@ func (g *Generator) writePreferenceFile(flavorDir, prefType string, pref signals
 `,
 		capitalize(prefType),
 		pref.Key,
+		emptyFallback(pref.Group, prefType),
 		pref.Category,
 		pref.Confidence,
 		pref.SignalCount,
@@ -110,6 +104,9 @@ func (g *Generator) writeConflictFile(flavorDir string, conflict signals.Conflic
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# Conflict: %s\n\n", conflict.Key))
+	if conflict.Group != "" {
+		sb.WriteString(fmt.Sprintf("**Group:** %s\n", conflict.Group))
+	}
 	sb.WriteString(fmt.Sprintf("**Category:** %s\n\n", conflict.Category))
 	sb.WriteString("This preference has conflicting signals. Please review and decide which to keep.\n\n")
 
@@ -133,6 +130,73 @@ func (g *Generator) writeConflictFile(flavorDir string, conflict signals.Conflic
 
 	if err := os.WriteFile(filename, []byte(sb.String()), 0644); err != nil {
 		return "", fmt.Errorf("failed to write conflict file: %w", err)
+	}
+
+	return filename, nil
+}
+
+type groupedPreference struct {
+	Type       signals.SignalType
+	Preference signals.Preference
+}
+
+func (g *Generator) collectPreferences(profile *signals.FlavorProfile) []groupedPreference {
+	var items []groupedPreference
+
+	for _, pref := range profile.StackPreferences {
+		items = append(items, groupedPreference{Type: signals.SignalStack, Preference: pref})
+	}
+	for _, pref := range profile.StylePreferences {
+		items = append(items, groupedPreference{Type: signals.SignalStyle, Preference: pref})
+	}
+	for _, pref := range profile.Corrections {
+		items = append(items, groupedPreference{Type: signals.SignalCorrection, Preference: pref})
+	}
+	for _, pref := range profile.Approvals {
+		items = append(items, groupedPreference{Type: signals.SignalApproval, Preference: pref})
+	}
+
+	return items
+}
+
+func groupPreferences(items []groupedPreference) map[string][]groupedPreference {
+	grouped := make(map[string][]groupedPreference)
+	for _, item := range items {
+		group := strings.TrimSpace(item.Preference.Group)
+		if group == "" {
+			group = string(item.Type)
+		}
+		grouped[group] = append(grouped[group], item)
+	}
+	return grouped
+}
+
+func (g *Generator) writeGroupFile(flavorDir, group string, items []groupedPreference) (string, error) {
+	safeName := sanitizeFilename(group)
+	filename := filepath.Join(flavorDir, fmt.Sprintf("%s.md", safeName))
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Preference.Confidence > items[j].Preference.Confidence
+	})
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Group: %s\n\n", group))
+	sb.WriteString("## Preferences\n\n")
+
+	for _, item := range items {
+		pref := item.Preference
+		sb.WriteString(fmt.Sprintf("### %s: %s\n\n", capitalize(string(item.Type)), pref.Key))
+		sb.WriteString(fmt.Sprintf("- **Category:** %s\n", pref.Category))
+		sb.WriteString(fmt.Sprintf("- **Confidence:** %.1f\n", pref.Confidence))
+		sb.WriteString(fmt.Sprintf("- **Seen:** %d times\n", pref.SignalCount))
+		sb.WriteString(fmt.Sprintf("- **First seen:** %s\n", pref.FirstSeen.Format("2006-01-02")))
+		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n\n", pref.LastSeen.Format("2006-01-02")))
+		sb.WriteString("**Rule:**\n\n")
+		sb.WriteString(fmt.Sprintf("%s\n\n", pref.Value))
+	}
+
+	if err := os.WriteFile(filename, []byte(sb.String()), 0644); err != nil {
+		return "", fmt.Errorf("failed to write group file: %w", err)
 	}
 
 	return filename, nil
@@ -170,6 +234,13 @@ func (g *Generator) AppendToClaudeMD(profile *signals.FlavorProfile, targetDir s
 	}
 
 	return nil
+}
+
+func emptyFallback(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func sanitizeFilename(s string) string {
