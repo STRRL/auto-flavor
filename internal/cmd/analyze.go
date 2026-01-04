@@ -14,12 +14,13 @@ import (
 )
 
 var (
-	analyzePath      string
-	analyzeDays      int
-	analyzeAll       bool
-	analyzeApply     bool
-	analyzeModel     string
-	analyzeBatchSize int
+	analyzePath       string
+	analyzeDays       int
+	analyzeAll        bool
+	analyzeApply      bool
+	analyzeModel      string
+	analyzeBatchSize  int
+	analyzeMaxEntries int
 )
 
 var analyzeCmd = &cobra.Command{
@@ -40,6 +41,7 @@ func init() {
 	analyzeCmd.Flags().BoolVar(&analyzeApply, "apply", false, "Also append to target project's CLAUDE.md")
 	analyzeCmd.Flags().StringVar(&analyzeModel, "model", "google/gemini-3-flash-preview", "OpenRouter model to use")
 	analyzeCmd.Flags().IntVar(&analyzeBatchSize, "batch-size", 30, "Number of entries per AI request")
+	analyzeCmd.Flags().IntVar(&analyzeMaxEntries, "max-entries", 0, "Max entries to process for debugging (0 = no limit)")
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) error {
@@ -81,6 +83,17 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Fetched %d entries for analysis\n", len(entries))
+	if !analyzeAll {
+		fmt.Printf("Entry window since: %s\n", since.Format("2006-01-02"))
+	}
+	if len(entries) == 0 {
+		fmt.Printf("No entries in window. Project history: %s to %s\n", first.Format("2006-01-02"), last.Format("2006-01-02"))
+	}
+
+	if analyzeMaxEntries > 0 && len(entries) > analyzeMaxEntries {
+		fmt.Printf("Limiting to %d entries for debugging\n", analyzeMaxEntries)
+		entries = entries[:analyzeMaxEntries]
+	}
 
 	detector, err := ai.NewDetector(ai.Config{
 		Model:     analyzeModel,
