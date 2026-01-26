@@ -74,24 +74,28 @@ func (g *Generator) writePreferenceFile(flavorDir string, pref signals.Preferenc
 	safeName := sanitizeFilename(pref.Title)
 	filename := filepath.Join(flavorDir, fmt.Sprintf("%s-%s.md", pref.Category, safeName))
 
-	content := fmt.Sprintf(`# %s
+	content := fmt.Sprintf(`---
+id: %s
+category: %s
+confidence: %.2f
+signal_count: %d
+first_seen: %s
+last_seen: %s
+---
 
-**Category:** %s
-**Confidence:** %.1f
-**Seen:** %d times
-**First seen:** %s
-**Last seen:** %s
+# %s
 
 ## Rule
 
 %s
 `,
-		pref.Title,
+		safeName,
 		pref.Category,
 		pref.Confidence,
 		pref.SignalCount,
 		pref.FirstSeen.Format("2006-01-02"),
 		pref.LastSeen.Format("2006-01-02"),
+		pref.Title,
 		pref.Description,
 	)
 
@@ -111,17 +115,21 @@ func (g *Generator) writeCategoryFile(flavorDir string, category signals.Categor
 	})
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Category: %s\n\n", category))
+
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("category: %s\n", category))
+	sb.WriteString(fmt.Sprintf("preference_count: %d\n", len(prefs)))
+	sb.WriteString("---\n\n")
+
+	sb.WriteString(fmt.Sprintf("# %s\n\n", category))
 	sb.WriteString(fmt.Sprintf("%s\n\n", signals.ValidCategories[category]))
-	sb.WriteString("## Preferences\n\n")
 
 	for _, pref := range prefs {
-		sb.WriteString(fmt.Sprintf("### %s\n\n", pref.Title))
-		sb.WriteString(fmt.Sprintf("- **Confidence:** %.1f\n", pref.Confidence))
-		sb.WriteString(fmt.Sprintf("- **Seen:** %d times\n", pref.SignalCount))
-		sb.WriteString(fmt.Sprintf("- **First seen:** %s\n", pref.FirstSeen.Format("2006-01-02")))
-		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n\n", pref.LastSeen.Format("2006-01-02")))
-		sb.WriteString("**Rule:**\n\n")
+		sb.WriteString(fmt.Sprintf("## %s\n\n", pref.Title))
+		sb.WriteString(fmt.Sprintf("- **confidence:** %.2f\n", pref.Confidence))
+		sb.WriteString(fmt.Sprintf("- **signal_count:** %d\n", pref.SignalCount))
+		sb.WriteString(fmt.Sprintf("- **first_seen:** %s\n", pref.FirstSeen.Format("2006-01-02")))
+		sb.WriteString(fmt.Sprintf("- **last_seen:** %s\n\n", pref.LastSeen.Format("2006-01-02")))
 		sb.WriteString(fmt.Sprintf("%s\n\n", pref.Description))
 	}
 
@@ -137,8 +145,15 @@ func (g *Generator) writeConflictFile(flavorDir string, conflict signals.Conflic
 	filename := filepath.Join(flavorDir, fmt.Sprintf("conflict-%s.undecided.md", safeName))
 
 	var sb strings.Builder
+
+	sb.WriteString("---\n")
+	sb.WriteString(fmt.Sprintf("id: %s\n", safeName))
+	sb.WriteString(fmt.Sprintf("category: %s\n", conflict.Category))
+	sb.WriteString("status: undecided\n")
+	sb.WriteString(fmt.Sprintf("option_count: %d\n", len(conflict.Values)))
+	sb.WriteString("---\n\n")
+
 	sb.WriteString(fmt.Sprintf("# Conflict: %s\n\n", conflict.Title))
-	sb.WriteString(fmt.Sprintf("**Category:** %s\n\n", conflict.Category))
 	sb.WriteString("This preference has conflicting signals. Please review and decide which to keep.\n\n")
 
 	for i, v := range conflict.Values {
@@ -147,10 +162,10 @@ func (g *Generator) writeConflictFile(flavorDir string, conflict signals.Conflic
 			sb.WriteString(" (Most Recent)")
 		}
 		sb.WriteString("\n\n")
-		sb.WriteString(fmt.Sprintf("- **Description:** %s\n", truncate(v.Description, 200)))
-		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n", v.Timestamp.Format("2006-01-02")))
-		sb.WriteString(fmt.Sprintf("- **Signal count:** %d\n", v.SignalCount))
-		sb.WriteString(fmt.Sprintf("- **Strength score:** %.2f\n\n", v.Strength))
+		sb.WriteString(fmt.Sprintf("- **description:** %s\n", truncate(v.Description, 200)))
+		sb.WriteString(fmt.Sprintf("- **last_seen:** %s\n", v.Timestamp.Format("2006-01-02")))
+		sb.WriteString(fmt.Sprintf("- **signal_count:** %d\n", v.SignalCount))
+		sb.WriteString(fmt.Sprintf("- **strength:** %.2f\n\n", v.Strength))
 	}
 
 	sb.WriteString("---\n\n")

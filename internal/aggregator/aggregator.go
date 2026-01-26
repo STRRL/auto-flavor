@@ -8,22 +8,18 @@ import (
 )
 
 type Config struct {
-	RecencyWeight     float64
-	FrequencyWeight   float64
-	StrengthWeight    float64
 	MinSignalCount    int
 	ConflictThreshold float64
-	RecencyDecayDays  int
+	RecentDays        int
+	StaleDays         int
 }
 
 func DefaultConfig() Config {
 	return Config{
-		RecencyWeight:     0.4,
-		FrequencyWeight:   0.3,
-		StrengthWeight:    0.3,
 		MinSignalCount:    1,
 		ConflictThreshold: 0.3,
-		RecencyDecayDays:  30,
+		RecentDays:        7,
+		StaleDays:         30,
 	}
 }
 
@@ -131,39 +127,66 @@ func (a *Aggregator) hasConflict(descGroups map[string][]signals.Signal) bool {
 }
 
 func (a *Aggregator) calculateGroupScore(sigs []signals.Signal) float64 {
-	var totalScore float64
+	count := len(sigs)
 
+	baseConfidence := a.frequencyToConfidence(count)
+
+	hasExplicit := false
 	for _, sig := range sigs {
-		recency := a.recencyScore(sig.Timestamp)
-		strength := strengthToFloat(sig.Strength)
-
-		score := (a.config.RecencyWeight * recency) +
-			(a.config.StrengthWeight * strength)
-
-		totalScore += score
+		if sig.Strength == signals.StrengthExplicit {
+			hasExplicit = true
+			break
+		}
+	}
+	if hasExplicit {
+		baseConfidence = 0.95
 	}
 
-	frequency := float64(len(sigs))
-	totalScore += a.config.FrequencyWeight * frequency
-
-	return totalScore
-}
-
-func strengthToFloat(s signals.Strength) float64 {
-	if s == signals.StrengthExplicit {
-		return 1.0
+	var mostRecent time.Time
+	for _, sig := range sigs {
+		if sig.Timestamp.After(mostRecent) {
+			mostRecent = sig.Timestamp
+		}
 	}
-	return 0.5
+
+	modifier := a.recencyModifier(mostRecent)
+
+	confidence := baseConfidence + modifier
+	if confidence > 1.0 {
+		confidence = 1.0
+	}
+	if confidence < 0.1 {
+		confidence = 0.1
+	}
+
+	return confidence
 }
 
-func (a *Aggregator) recencyScore(timestamp time.Time) float64 {
+func (a *Aggregator) frequencyToConfidence(count int) float64 {
+	switch {
+	case count >= 11:
+		return 0.85
+	case count >= 6:
+		return 0.7
+	case count >= 3:
+		return 0.5
+	default:
+		return 0.3
+	}
+}
+
+func (a *Aggregator) recencyModifier(timestamp time.Time) float64 {
 	daysSince := a.now.Sub(timestamp).Hours() / 24
 
-	if daysSince >= float64(a.config.RecencyDecayDays) {
-		return 0.1
+	if daysSince <= float64(a.config.RecentDays) {
+		return 0.05
 	}
 
-	return 1.0 - (daysSince / float64(a.config.RecencyDecayDays) * 0.9)
+	if daysSince >= float64(a.config.StaleDays) {
+		return -0.1
+	}
+
+	return 0.0
 }
 
 func (a *Aggregator) buildPreference(sigs []signals.Signal) *signals.Preference {
