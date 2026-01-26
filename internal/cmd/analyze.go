@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,22 +11,24 @@ import (
 	"github.com/strrl/auto-flavor/internal/aggregator"
 	"github.com/strrl/auto-flavor/internal/output"
 	"github.com/strrl/auto-flavor/internal/parser"
-	"github.com/strrl/auto-flavor/internal/signals"
+	"github.com/strrl/auto-flavor/internal/pipeline"
 )
 
 var (
-	analyzePath  string
-	analyzeDays  int
-	analyzeAll   bool
-	analyzeApply bool
+	analyzePath       string
+	analyzeDays       int
+	analyzeAll        bool
+	analyzeApply      bool
+	analyzeModel      string
+	analyzeMaxEntries int
 )
 
 var analyzeCmd = &cobra.Command{
 	Use:   "analyze",
 	Short: "Analyze Claude Code chat history to extract coding flavor",
 	Long: `Analyze Claude Code chat history for a project to extract the developer's
-coding preferences, style patterns, and corrections. Generates one flavor file
-per rule in .flavor/<rule>.md and optionally appends rules to CLAUDE.md.`,
+coding preferences, style patterns, and corrections. Generates flavor files
+in .flavor/ directory and optionally appends rules to CLAUDE.md.`,
 	RunE: runAnalyze,
 }
 
@@ -36,6 +39,8 @@ func init() {
 	analyzeCmd.Flags().IntVarP(&analyzeDays, "days", "d", 30, "Number of days to analyze")
 	analyzeCmd.Flags().BoolVar(&analyzeAll, "all", false, "Analyze all sessions regardless of time")
 	analyzeCmd.Flags().BoolVar(&analyzeApply, "apply", false, "Also append to target project's CLAUDE.md")
+	analyzeCmd.Flags().StringVar(&analyzeModel, "model", "google/gemini-2.0-flash-001", "OpenRouter model to use")
+	analyzeCmd.Flags().IntVar(&analyzeMaxEntries, "max-entries", 0, "Max entries to process for debugging (0 = no limit)")
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) error {
@@ -77,20 +82,47 @@ func runAnalyze(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("Fetched %d entries for analysis\n", len(entries))
+	if !analyzeAll {
+		fmt.Printf("Entry window since: %s\n", since.Format("2006-01-02"))
+	}
+	if len(entries) == 0 {
+		fmt.Printf("No entries in window. Project history: %s to %s\n", first.Format("2006-01-02"), last.Format("2006-01-02"))
+		return nil
+	}
 
-	detector := signals.NewDetector()
-	sigs := detector.DetectSignals(entries)
+	if analyzeMaxEntries > 0 && len(entries) > analyzeMaxEntries {
+		fmt.Printf("Limiting to %d entries for debugging\n", analyzeMaxEntries)
+		entries = entries[:analyzeMaxEntries]
+	}
 
-	fmt.Printf("Detected %d signals\n", len(sigs))
+	pipe, err := pipeline.New(pipeline.Config{
+		Model: analyzeModel,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to initialize pipeline: %w", err)
+	}
+
+	fmt.Printf("Using OpenRouter model: %s\n", analyzeModel)
+	fmt.Println("Running 3-stage pipeline: Filter → Classify → Extract")
+
+	ctx := context.Background()
+	sigs, stats, err := pipe.Process(ctx, entries)
+	if err != nil {
+		return fmt.Errorf("pipeline failed: %w", err)
+	}
+
+	fmt.Printf("Pipeline stats:\n")
+	fmt.Printf("  - Total entries: %d\n", stats.TotalEntries)
+	fmt.Printf("  - User messages: %d\n", stats.UserEntries)
+	fmt.Printf("  - After filter (Stage 1): %d candidates\n", stats.FilteredCount)
+	fmt.Printf("  - After classify (Stage 2): %d classified\n", stats.ClassifiedCount)
+	fmt.Printf("  - After extract (Stage 3): %d signals\n", stats.ExtractedCount)
 
 	agg := aggregator.NewAggregator(aggregator.DefaultConfig())
 	profile := agg.Aggregate(sigs)
 
 	fmt.Printf("Aggregated into profile with:\n")
-	fmt.Printf("  - %d stack preferences\n", len(profile.StackPreferences))
-	fmt.Printf("  - %d style preferences\n", len(profile.StylePreferences))
-	fmt.Printf("  - %d corrections\n", len(profile.Corrections))
-	fmt.Printf("  - %d approvals\n", len(profile.Approvals))
+	fmt.Printf("  - %d preferences\n", len(profile.Preferences))
 	fmt.Printf("  - %d conflicts\n", len(profile.Conflicts))
 
 	gen := output.NewGenerator(projectPath)
