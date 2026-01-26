@@ -15,7 +15,7 @@ type Generator struct {
 	outputDir string
 }
 
-const groupMergeThreshold = 3
+const categoryMergeThreshold = 3
 
 func NewGenerator(outputDir string) *Generator {
 	return &Generator{
@@ -31,11 +31,10 @@ func (g *Generator) Generate(profile *signals.FlavorProfile) ([]string, error) {
 
 	var files []string
 
-	preferences := g.collectPreferences(profile)
-	grouped := groupPreferences(preferences)
-	for group, items := range grouped {
-		if len(items) >= groupMergeThreshold {
-			filename, err := g.writeGroupFile(flavorDir, group, items)
+	grouped := groupByCategory(profile.Preferences)
+	for category, prefs := range grouped {
+		if len(prefs) >= categoryMergeThreshold {
+			filename, err := g.writeCategoryFile(flavorDir, category, prefs)
 			if err != nil {
 				return nil, err
 			}
@@ -43,8 +42,8 @@ func (g *Generator) Generate(profile *signals.FlavorProfile) ([]string, error) {
 			continue
 		}
 
-		for _, item := range items {
-			filename, err := g.writePreferenceFile(flavorDir, string(item.Type), item.Preference)
+		for _, pref := range prefs {
+			filename, err := g.writePreferenceFile(flavorDir, pref)
 			if err != nil {
 				return nil, err
 			}
@@ -63,13 +62,20 @@ func (g *Generator) Generate(profile *signals.FlavorProfile) ([]string, error) {
 	return files, nil
 }
 
-func (g *Generator) writePreferenceFile(flavorDir, prefType string, pref signals.Preference) (string, error) {
-	safeName := sanitizeFilename(pref.Key)
-	filename := filepath.Join(flavorDir, fmt.Sprintf("%s-%s.md", prefType, safeName))
+func groupByCategory(prefs []signals.Preference) map[signals.Category][]signals.Preference {
+	grouped := make(map[signals.Category][]signals.Preference)
+	for _, pref := range prefs {
+		grouped[pref.Category] = append(grouped[pref.Category], pref)
+	}
+	return grouped
+}
 
-	content := fmt.Sprintf(`# %s: %s
+func (g *Generator) writePreferenceFile(flavorDir string, pref signals.Preference) (string, error) {
+	safeName := sanitizeFilename(pref.Title)
+	filename := filepath.Join(flavorDir, fmt.Sprintf("%s-%s.md", pref.Category, safeName))
 
-**Group:** %s
+	content := fmt.Sprintf(`# %s
+
 **Category:** %s
 **Confidence:** %.1f
 **Seen:** %d times
@@ -80,33 +86,58 @@ func (g *Generator) writePreferenceFile(flavorDir, prefType string, pref signals
 
 %s
 `,
-		capitalize(prefType),
-		pref.Key,
-		emptyFallback(pref.Group, prefType),
+		pref.Title,
 		pref.Category,
 		pref.Confidence,
 		pref.SignalCount,
 		pref.FirstSeen.Format("2006-01-02"),
 		pref.LastSeen.Format("2006-01-02"),
-		pref.Value,
+		pref.Description,
 	)
 
 	if err := os.WriteFile(filename, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("failed to write %s file: %w", prefType, err)
+		return "", fmt.Errorf("failed to write preference file: %w", err)
+	}
+
+	return filename, nil
+}
+
+func (g *Generator) writeCategoryFile(flavorDir string, category signals.Category, prefs []signals.Preference) (string, error) {
+	safeName := sanitizeFilename(string(category))
+	filename := filepath.Join(flavorDir, fmt.Sprintf("%s.md", safeName))
+
+	sort.Slice(prefs, func(i, j int) bool {
+		return prefs[i].Confidence > prefs[j].Confidence
+	})
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# Category: %s\n\n", category))
+	sb.WriteString(fmt.Sprintf("%s\n\n", signals.ValidCategories[category]))
+	sb.WriteString("## Preferences\n\n")
+
+	for _, pref := range prefs {
+		sb.WriteString(fmt.Sprintf("### %s\n\n", pref.Title))
+		sb.WriteString(fmt.Sprintf("- **Confidence:** %.1f\n", pref.Confidence))
+		sb.WriteString(fmt.Sprintf("- **Seen:** %d times\n", pref.SignalCount))
+		sb.WriteString(fmt.Sprintf("- **First seen:** %s\n", pref.FirstSeen.Format("2006-01-02")))
+		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n\n", pref.LastSeen.Format("2006-01-02")))
+		sb.WriteString("**Rule:**\n\n")
+		sb.WriteString(fmt.Sprintf("%s\n\n", pref.Description))
+	}
+
+	if err := os.WriteFile(filename, []byte(sb.String()), 0644); err != nil {
+		return "", fmt.Errorf("failed to write category file: %w", err)
 	}
 
 	return filename, nil
 }
 
 func (g *Generator) writeConflictFile(flavorDir string, conflict signals.ConflictingPreference) (string, error) {
-	safeName := sanitizeFilename(conflict.Key)
+	safeName := sanitizeFilename(conflict.Title)
 	filename := filepath.Join(flavorDir, fmt.Sprintf("conflict-%s.undecided.md", safeName))
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Conflict: %s\n\n", conflict.Key))
-	if conflict.Group != "" {
-		sb.WriteString(fmt.Sprintf("**Group:** %s\n", conflict.Group))
-	}
+	sb.WriteString(fmt.Sprintf("# Conflict: %s\n\n", conflict.Title))
 	sb.WriteString(fmt.Sprintf("**Category:** %s\n\n", conflict.Category))
 	sb.WriteString("This preference has conflicting signals. Please review and decide which to keep.\n\n")
 
@@ -116,7 +147,7 @@ func (g *Generator) writeConflictFile(flavorDir string, conflict signals.Conflic
 			sb.WriteString(" (Most Recent)")
 		}
 		sb.WriteString("\n\n")
-		sb.WriteString(fmt.Sprintf("- **Value:** %s\n", truncate(v.Value, 200)))
+		sb.WriteString(fmt.Sprintf("- **Description:** %s\n", truncate(v.Description, 200)))
 		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n", v.Timestamp.Format("2006-01-02")))
 		sb.WriteString(fmt.Sprintf("- **Signal count:** %d\n", v.SignalCount))
 		sb.WriteString(fmt.Sprintf("- **Strength score:** %.2f\n\n", v.Strength))
@@ -135,85 +166,16 @@ func (g *Generator) writeConflictFile(flavorDir string, conflict signals.Conflic
 	return filename, nil
 }
 
-type groupedPreference struct {
-	Type       signals.SignalType
-	Preference signals.Preference
-}
-
-func (g *Generator) collectPreferences(profile *signals.FlavorProfile) []groupedPreference {
-	var items []groupedPreference
-
-	for _, pref := range profile.StackPreferences {
-		items = append(items, groupedPreference{Type: signals.SignalStack, Preference: pref})
-	}
-	for _, pref := range profile.StylePreferences {
-		items = append(items, groupedPreference{Type: signals.SignalStyle, Preference: pref})
-	}
-	for _, pref := range profile.Corrections {
-		items = append(items, groupedPreference{Type: signals.SignalCorrection, Preference: pref})
-	}
-	for _, pref := range profile.Approvals {
-		items = append(items, groupedPreference{Type: signals.SignalApproval, Preference: pref})
-	}
-
-	return items
-}
-
-func groupPreferences(items []groupedPreference) map[string][]groupedPreference {
-	grouped := make(map[string][]groupedPreference)
-	for _, item := range items {
-		group := strings.TrimSpace(item.Preference.Group)
-		if group == "" {
-			group = string(item.Type)
-		}
-		grouped[group] = append(grouped[group], item)
-	}
-	return grouped
-}
-
-func (g *Generator) writeGroupFile(flavorDir, group string, items []groupedPreference) (string, error) {
-	safeName := sanitizeFilename(group)
-	filename := filepath.Join(flavorDir, fmt.Sprintf("%s.md", safeName))
-
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Preference.Confidence > items[j].Preference.Confidence
-	})
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("# Group: %s\n\n", group))
-	sb.WriteString("## Preferences\n\n")
-
-	for _, item := range items {
-		pref := item.Preference
-		sb.WriteString(fmt.Sprintf("### %s: %s\n\n", capitalize(string(item.Type)), pref.Key))
-		sb.WriteString(fmt.Sprintf("- **Category:** %s\n", pref.Category))
-		sb.WriteString(fmt.Sprintf("- **Confidence:** %.1f\n", pref.Confidence))
-		sb.WriteString(fmt.Sprintf("- **Seen:** %d times\n", pref.SignalCount))
-		sb.WriteString(fmt.Sprintf("- **First seen:** %s\n", pref.FirstSeen.Format("2006-01-02")))
-		sb.WriteString(fmt.Sprintf("- **Last seen:** %s\n\n", pref.LastSeen.Format("2006-01-02")))
-		sb.WriteString("**Rule:**\n\n")
-		sb.WriteString(fmt.Sprintf("%s\n\n", pref.Value))
-	}
-
-	if err := os.WriteFile(filename, []byte(sb.String()), 0644); err != nil {
-		return "", fmt.Errorf("failed to write group file: %w", err)
-	}
-
-	return filename, nil
-}
-
 func (g *Generator) AppendToClaudeMD(profile *signals.FlavorProfile, targetDir string) error {
 	claudeMDPath := filepath.Join(targetDir, "CLAUDE.md")
 
 	var rules []string
 
-	for _, pref := range profile.StylePreferences {
-		rules = append(rules, fmt.Sprintf("- %s", pref.Value))
-	}
-
-	for _, pref := range profile.Corrections {
-		if pref.Category == "prohibition" || pref.Category == "requirement" {
-			rules = append(rules, fmt.Sprintf("- %s", pref.Value))
+	for _, pref := range profile.Preferences {
+		if pref.Category == signals.CategoryProhibition ||
+			pref.Category == signals.CategoryCodeStyle ||
+			pref.Category == signals.CategoryCommunication {
+			rules = append(rules, fmt.Sprintf("- %s", pref.Description))
 		}
 	}
 
@@ -236,13 +198,6 @@ func (g *Generator) AppendToClaudeMD(profile *signals.FlavorProfile, targetDir s
 	return nil
 }
 
-func emptyFallback(value, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
 func sanitizeFilename(s string) string {
 	reg := regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 	result := reg.ReplaceAllString(s, "-")
@@ -262,11 +217,4 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen] + "..."
 	}
 	return s
-}
-
-func capitalize(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }

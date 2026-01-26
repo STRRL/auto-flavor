@@ -21,7 +21,7 @@ func DefaultConfig() Config {
 		RecencyWeight:     0.4,
 		FrequencyWeight:   0.3,
 		StrengthWeight:    0.3,
-		MinSignalCount:    2,
+		MinSignalCount:    1,
 		ConflictThreshold: 0.3,
 		RecencyDecayDays:  30,
 	}
@@ -54,13 +54,13 @@ func (a *Aggregator) Aggregate(sigs []signals.Signal) *signals.FlavorProfile {
 
 	grouped := a.groupSignals(sigs)
 
-	for key, groupedSigs := range grouped {
-		pref, conflict := a.aggregateGroup(key, groupedSigs)
+	for _, groupedSigs := range grouped {
+		pref, conflict := a.aggregateGroup(groupedSigs)
 
 		if conflict != nil {
 			profile.Conflicts = append(profile.Conflicts, *conflict)
 		} else if pref != nil {
-			a.categorizePreference(profile, pref, groupedSigs[0].Type)
+			profile.Preferences = append(profile.Preferences, *pref)
 		}
 	}
 
@@ -73,47 +73,44 @@ func (a *Aggregator) groupSignals(sigs []signals.Signal) map[string][]signals.Si
 	groups := make(map[string][]signals.Signal)
 
 	for _, sig := range sigs {
-		key := string(sig.Type) + "::" + sig.Category + "::" + sig.Key
+		key := string(sig.Category) + "::" + sig.Title
 		groups[key] = append(groups[key], sig)
 	}
 
 	return groups
 }
 
-func (a *Aggregator) aggregateGroup(_ string, sigs []signals.Signal) (*signals.Preference, *signals.ConflictingPreference) {
+func (a *Aggregator) aggregateGroup(sigs []signals.Signal) (*signals.Preference, *signals.ConflictingPreference) {
 	if len(sigs) < a.config.MinSignalCount {
-		if len(sigs) > 0 && sigs[0].Strength == signals.StrengthExplicit {
-			return a.buildPreference(sigs), nil
-		}
 		return nil, nil
 	}
 
-	valueGroups := a.groupByValue(sigs)
+	descGroups := a.groupByDescription(sigs)
 
-	if len(valueGroups) > 1 && a.hasConflict(valueGroups) {
-		return nil, a.buildConflict(sigs[0].Category, sigs[0].Key, valueGroups)
+	if len(descGroups) > 1 && a.hasConflict(descGroups) {
+		return nil, a.buildConflict(sigs[0].Category, sigs[0].Title, descGroups)
 	}
 
 	return a.buildPreference(sigs), nil
 }
 
-func (a *Aggregator) groupByValue(sigs []signals.Signal) map[string][]signals.Signal {
+func (a *Aggregator) groupByDescription(sigs []signals.Signal) map[string][]signals.Signal {
 	groups := make(map[string][]signals.Signal)
 
 	for _, sig := range sigs {
-		groups[sig.Value] = append(groups[sig.Value], sig)
+		groups[sig.Description] = append(groups[sig.Description], sig)
 	}
 
 	return groups
 }
 
-func (a *Aggregator) hasConflict(valueGroups map[string][]signals.Signal) bool {
-	if len(valueGroups) <= 1 {
+func (a *Aggregator) hasConflict(descGroups map[string][]signals.Signal) bool {
+	if len(descGroups) <= 1 {
 		return false
 	}
 
 	var scores []float64
-	for _, sigs := range valueGroups {
+	for _, sigs := range descGroups {
 		score := a.calculateGroupScore(sigs)
 		scores = append(scores, score)
 	}
@@ -138,7 +135,7 @@ func (a *Aggregator) calculateGroupScore(sigs []signals.Signal) float64 {
 
 	for _, sig := range sigs {
 		recency := a.recencyScore(sig.Timestamp)
-		strength := float64(sig.Strength) / 4.0
+		strength := strengthToFloat(sig.Strength)
 
 		score := (a.config.RecencyWeight * recency) +
 			(a.config.StrengthWeight * strength)
@@ -150,6 +147,13 @@ func (a *Aggregator) calculateGroupScore(sigs []signals.Signal) float64 {
 	totalScore += a.config.FrequencyWeight * frequency
 
 	return totalScore
+}
+
+func strengthToFloat(s signals.Strength) float64 {
+	if s == signals.StrengthExplicit {
+		return 1.0
+	}
+	return 0.5
 }
 
 func (a *Aggregator) recencyScore(timestamp time.Time) float64 {
@@ -171,10 +175,9 @@ func (a *Aggregator) buildPreference(sigs []signals.Signal) *signals.Preference 
 	oldest := sigs[len(sigs)-1]
 
 	return &signals.Preference{
-		Group:       mostRecent.Group,
 		Category:    mostRecent.Category,
-		Key:         mostRecent.Key,
-		Value:       mostRecent.Value,
+		Title:       mostRecent.Title,
+		Description: mostRecent.Description,
 		Confidence:  a.calculateGroupScore(sigs),
 		SignalCount: len(sigs),
 		FirstSeen:   oldest.Timestamp,
@@ -182,14 +185,13 @@ func (a *Aggregator) buildPreference(sigs []signals.Signal) *signals.Preference 
 	}
 }
 
-func (a *Aggregator) buildConflict(category, key string, valueGroups map[string][]signals.Signal) *signals.ConflictingPreference {
+func (a *Aggregator) buildConflict(category signals.Category, title string, descGroups map[string][]signals.Signal) *signals.ConflictingPreference {
 	conflict := &signals.ConflictingPreference{
-		Group:    pickConflictGroup(valueGroups),
 		Category: category,
-		Key:      key,
+		Title:    title,
 	}
 
-	for value, sigs := range valueGroups {
+	for desc, sigs := range descGroups {
 		if len(sigs) == 0 {
 			continue
 		}
@@ -199,7 +201,7 @@ func (a *Aggregator) buildConflict(category, key string, valueGroups map[string]
 		})
 
 		conflict.Values = append(conflict.Values, signals.ConflictValue{
-			Value:       value,
+			Description: desc,
 			Timestamp:   sigs[0].Timestamp,
 			SignalCount: len(sigs),
 			Strength:    a.calculateGroupScore(sigs),
@@ -213,45 +215,8 @@ func (a *Aggregator) buildConflict(category, key string, valueGroups map[string]
 	return conflict
 }
 
-func pickConflictGroup(valueGroups map[string][]signals.Signal) string {
-	for _, sigs := range valueGroups {
-		if len(sigs) == 0 {
-			continue
-		}
-		if sigs[0].Group != "" {
-			return sigs[0].Group
-		}
-	}
-	return ""
-}
-
-func (a *Aggregator) categorizePreference(profile *signals.FlavorProfile, pref *signals.Preference, sigType signals.SignalType) {
-	switch sigType {
-	case signals.SignalStack:
-		profile.StackPreferences = append(profile.StackPreferences, *pref)
-	case signals.SignalStyle:
-		profile.StylePreferences = append(profile.StylePreferences, *pref)
-	case signals.SignalApproval:
-		profile.Approvals = append(profile.Approvals, *pref)
-	case signals.SignalCorrection:
-		profile.Corrections = append(profile.Corrections, *pref)
-	}
-}
-
 func (a *Aggregator) sortByConfidence(profile *signals.FlavorProfile) {
-	sort.Slice(profile.StackPreferences, func(i, j int) bool {
-		return profile.StackPreferences[i].Confidence > profile.StackPreferences[j].Confidence
-	})
-
-	sort.Slice(profile.StylePreferences, func(i, j int) bool {
-		return profile.StylePreferences[i].Confidence > profile.StylePreferences[j].Confidence
-	})
-
-	sort.Slice(profile.Corrections, func(i, j int) bool {
-		return profile.Corrections[i].Confidence > profile.Corrections[j].Confidence
-	})
-
-	sort.Slice(profile.Approvals, func(i, j int) bool {
-		return profile.Approvals[i].Confidence > profile.Approvals[j].Confidence
+	sort.Slice(profile.Preferences, func(i, j int) bool {
+		return profile.Preferences[i].Confidence > profile.Preferences[j].Confidence
 	})
 }

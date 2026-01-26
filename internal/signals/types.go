@@ -4,40 +4,53 @@ import (
 	"time"
 )
 
-type SignalType string
+type Category string
 
 const (
-	SignalApproval   SignalType = "approval"
-	SignalCorrection SignalType = "correction"
-	SignalStack      SignalType = "stack"
-	SignalStyle      SignalType = "style"
+	CategoryCodeStyle      Category = "code_style"
+	CategoryArchitecture   Category = "architecture"
+	CategoryTooling        Category = "tooling"
+	CategoryVersionControl Category = "version_control"
+	CategoryCommunication  Category = "communication"
+	CategoryProhibition    Category = "prohibition"
+	CategoryStack          Category = "stack"
 )
 
-type SignalStrength int
+var ValidCategories = map[Category]string{
+	CategoryCodeStyle:      "Code style preferences (naming, indentation, comments, formatting)",
+	CategoryArchitecture:   "Architecture preferences (patterns, file organization, error handling)",
+	CategoryTooling:        "Tooling preferences (package manager, bundler, test framework, linter)",
+	CategoryVersionControl: "Version control preferences (commit style, branch naming)",
+	CategoryCommunication:  "Communication preferences (response language, verbosity)",
+	CategoryProhibition:    "Prohibitions (things explicitly not to do)",
+	CategoryStack:          "Technology stack (languages, frameworks, libraries)",
+}
+
+func (c Category) IsValid() bool {
+	_, ok := ValidCategories[c]
+	return ok
+}
+
+type Strength string
 
 const (
-	StrengthWeak     SignalStrength = 1
-	StrengthModerate SignalStrength = 2
-	StrengthStrong   SignalStrength = 3
-	StrengthExplicit SignalStrength = 4
+	StrengthExplicit Strength = "explicit"
+	StrengthInferred Strength = "inferred"
 )
 
 type Signal struct {
-	Type      SignalType
-	Group     string
-	Category  string
-	Key       string
-	Value     string
-	Strength  SignalStrength
-	Timestamp time.Time
-	Context   string
+	Category    Category
+	Title       string
+	Description string
+	Strength    Strength
+	Timestamp   time.Time
+	Context     string
 }
 
 type Preference struct {
-	Group       string
-	Category    string
-	Key         string
-	Value       string
+	Category    Category
+	Title       string
+	Description string
 	Confidence  float64
 	SignalCount int
 	FirstSeen   time.Time
@@ -45,14 +58,13 @@ type Preference struct {
 }
 
 type ConflictingPreference struct {
-	Group    string
-	Category string
-	Key      string
+	Category Category
+	Title    string
 	Values   []ConflictValue
 }
 
 type ConflictValue struct {
-	Value       string
+	Description string
 	Timestamp   time.Time
 	SignalCount int
 	Strength    float64
@@ -62,13 +74,8 @@ type FlavorProfile struct {
 	CreatedAt        time.Time
 	AnalyzedMessages int
 	TimeRange        TimeRange
-
-	StackPreferences []Preference
-	StylePreferences []Preference
-	Approvals        []Preference
-	Corrections      []Preference
-
-	Conflicts []ConflictingPreference
+	Preferences      []Preference
+	Conflicts        []ConflictingPreference
 }
 
 type TimeRange struct {
