@@ -13,6 +13,7 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
+	loadDotenv()
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
